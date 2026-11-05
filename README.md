@@ -65,7 +65,7 @@ Userscript для автоматического скачивания всех �
 
 ## Поддержка
 
-🐛 [Issues](https://github.com/DeivBoo/yandex-disk-multi-downloader/issues) · 💡 [Discussions](https://github.com/DeivBoo/yandex-disk-multi-downloader/discussions)
+🐛 [Issues](https://github.com/DeivBoo/yandex-disk-multi-downloader/issues)
 
 При проблеме приложите: версию скрипта (из консоли), браузер, лог F12, фрагмент HTML строки файла.
 
