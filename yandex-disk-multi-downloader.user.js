@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yandex Disk Multi-Downloader (Smart Edition)
 // @namespace    https://github.com/DeivBoo/yandex-disk-multi-downloader
-// @version      1.0.0
+// @version      1.0.1
 // @description  Автоматически скачивает все файлы из открытой папки на Яндекс.Диске (с обходом ленивой загрузки)
 // @author       Advenitille, DeivBoo
 // @match        https://disk.yandex.ru/d/*
@@ -18,15 +18,10 @@
 (function () {
     'use strict';
 
-    console.log('[Yandex Disk Downloader] v1.0.0 запущен');
+    console.log('[Yandex Disk Downloader] запущен');
 
-    // Окно страницы: при наличии sandbox-изоляции (любой @grant) используем unsafeWindow
-    // для корректной диспетчеризации событий (свойство view). Иначе — обычный window.
     const pageWindow = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
 
-    // ==========================================
-    // ⚙️ НАСТРОЙКИ
-    // ==========================================
     const CONFIG = {
         DELAY_BETWEEN_FILES: 700,    // Пауза между файлами (мс)
         DELAY_AFTER_SCROLL:  1000,   // Пауза после скролла
@@ -39,50 +34,34 @@
         MAX_EMPTY_SCROLLS:   10      // Лимит пустых скроллов подряд
     };
 
-    // ==========================================
-    // 🛠 СОСТОЯНИЕ
-    // ==========================================
     let isRunning = false;
     let stopRequested = false;
     let abortController = null;
 
-    // ==========================================
-    // 💤 Отменяемый sleep
-    // ==========================================
     function sleep(ms) {
         return new Promise((resolve, reject) => {
             if (stopRequested) return reject(new Error('aborted'));
-
             let timer = null;
             const onAbort = () => {
                 if (timer) clearTimeout(timer);
                 reject(new Error('aborted'));
             };
-
             if (abortController) {
                 if (abortController.signal.aborted) return onAbort();
                 abortController.signal.addEventListener('abort', onAbort, { once: true });
             }
-
             timer = setTimeout(() => {
-                if (abortController) {
-                    abortController.signal.removeEventListener('abort', onAbort);
-                }
+                if (abortController) abortController.signal.removeEventListener('abort', onAbort);
                 resolve();
             }, ms);
         });
     }
 
-    // ==========================================
-    // 🖱️ UI
-    // ==========================================
     function createDownloadButton() {
         if (document.getElementById('tm-download-all-btn')) return;
-
         const btn = document.createElement('button');
         btn.id = 'tm-download-all-btn';
         btn.innerText = '⚡ Скачать все файлы';
-
         Object.assign(btn.style, {
             position: 'fixed', bottom: '20px', right: '20px', zIndex: '999999',
             padding: '14px 22px', backgroundColor: '#ffcc00', color: '#000',
@@ -91,7 +70,6 @@
             fontFamily: 'system-ui, sans-serif', fontSize: '14px',
             transition: 'background-color 0.2s, opacity 0.2s'
         });
-
         btn.addEventListener('click', handleButtonClick);
         document.body.appendChild(btn);
     }
@@ -99,7 +77,6 @@
     function updateButtonUI(state, text) {
         const btn = document.getElementById('tm-download-all-btn');
         if (!btn) return;
-
         if (state === 'running') {
             btn.innerText = text || '🛑 Остановить';
             btn.style.backgroundColor = '#ff5c5c';
@@ -135,9 +112,6 @@
         }
     }
 
-    // ==========================================
-    // 🧠 УТИЛИТЫ DOM
-    // ==========================================
     function isElementVisible(el) {
         if (!el) return false;
         const rect = el.getBoundingClientRect();
@@ -150,8 +124,7 @@
             const rect = element.getBoundingClientRect();
             const config = {
                 bubbles: true, cancelable: true, view: pageWindow,
-                clientX: rect.left + rect.width / 2,
-                clientY: rect.top + rect.height / 2,
+                clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
                 button: 0, buttons: 1
             };
             element.dispatchEvent(new PointerEvent('pointerdown', config));
@@ -165,49 +138,50 @@
         }
     }
 
-    function getFileName(row) {
-        const titleEl = row.querySelector('[data-testid="listing-item-title"]');
-        if (!titleEl) return null;
-        return titleEl.getAttribute('aria-label') || titleEl.textContent.trim();
+    function normalizeName(name) {
+        if (!name) return '';
+        return name.replace(/\s+/g, ' ').trim();
     }
 
-    // Уникальный ключ: имя + размер + дата + длительность (защита от дубликатов)
+    function getFileName(row) {
+        const titleEl = row.querySelector('[data-testid="listing-item-title"], [class*="listing-item__title"]');
+        if (!titleEl) return null;
+        return normalizeName(titleEl.getAttribute('aria-label') || titleEl.textContent);
+    }
+
     function getFileKey(row) {
         const name = getFileName(row);
         if (!name) return null;
-        const size = (row.querySelector('[data-testid="listing-item-column-size"]')  || {}).textContent || '';
-        const date = (row.querySelector('[data-testid="listing-item-column-date"]')  || {}).textContent || '';
-        const time = (row.querySelector('[data-testid="listing-item-column-time"]')  || {}).textContent || '';
-        return `${name}::${size.trim()}::${date.trim()}::${time.trim()}`;
+        const sizeEl = row.querySelector('[data-testid="listing-item-column-size"], [class*="column-size"]');
+        const dateEl = row.querySelector('[data-testid="listing-item-column-date"], [class*="column-date"]');
+        const timeEl = row.querySelector('[data-testid="listing-item-column-time"], [class*="column-time"]');
+        return `${name}::${sizeEl?.textContent?.trim() || ''}::${dateEl?.textContent?.trim() || ''}::${timeEl?.textContent?.trim() || ''}`;
     }
 
     function getFileRows() {
-        return Array.from(document.querySelectorAll('.listing-item_type_file'));
+        return Array.from(document.querySelectorAll('.listing-item_type_file, [class*="listing-item_type_file"]'));
     }
 
     function getActionBarFileName() {
         const el = document.querySelector('.resources-info-dropdown__name');
-        return el ? el.textContent.trim() : null;
+        if (!el) return null;
+        const clamped = el.querySelector('.clamped-text');
+        if (clamped && clamped.getAttribute('title')) {
+            return normalizeName(clamped.getAttribute('title'));
+        }
+        return normalizeName(el.getAttribute('title') || el.textContent);
     }
 
-    // Поиск кнопки «Скачать» (именно в панели действий, не «Скачать всё»)
     function findDownloadButton() {
-        // 1. Action bar (наиболее точный селектор)
-        let btn = document.querySelector('.resources-action-bar .download-button');
+        let btn = document.querySelector('button[aria-label="Скачать"]');
         if (isElementVisible(btn)) return btn;
 
-        // 2. Класс download-button + точный текст «Скачать»
-        for (const b of document.querySelectorAll('button.download-button')) {
-            if (b.textContent.trim() === 'Скачать' && isElementVisible(b)) return b;
-        }
+        btn = document.querySelector('.groupable-buttons__visible-button_name_download');
+        if (isElementVisible(btn)) return btn;
 
-        // 3. Scoped fallback: только внутри action bar (не по всей странице)
-        const actionBar = document.querySelector('.resources-action-bar');
-        if (actionBar) {
-            for (const b of actionBar.querySelectorAll('button, [role="button"]')) {
-                if (b.textContent.trim() === 'Скачать' && isElementVisible(b)) return b;
-            }
-        }
+        btn = document.querySelector('.resources-action-bar .download-button');
+        if (isElementVisible(btn)) return btn;
+
         return null;
     }
 
@@ -220,38 +194,30 @@
             document.querySelector('.content')
         ];
         for (const c of candidates) {
-            if (!c) continue;
-            const style = window.getComputedStyle(c);
-            const scrollable = (style.overflowY === 'auto' || style.overflowY === 'scroll');
-            if (scrollable && c.scrollHeight > c.clientHeight + 20) return c;
+            if (c && c.scrollHeight > c.clientHeight + 20) return c;
         }
         return null;
     }
 
     function scrollDown() {
         const container = getScrollContainer();
-        if (container) {
-            container.scrollTop += CONFIG.SCROLL_STEP;
-        } else {
-            window.scrollBy(0, CONFIG.SCROLL_STEP);
-        }
+        if (container) container.scrollTop += CONFIG.SCROLL_STEP;
+        else window.scrollBy(0, CONFIG.SCROLL_STEP);
     }
 
     function isAtBottom() {
         const container = getScrollContainer();
-        if (container) {
-            return container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
+        if (container) return container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
+        if (document.body.scrollHeight > window.innerHeight) {
+            return (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 150);
         }
-        return (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 150);
+        return false;
     }
 
     function isRowSelected(row) {
         return row.getAttribute('aria-selected') === 'true';
     }
 
-    // ==========================================
-    // 🚀 ОСНОВНАЯ ЛОГИКА
-    // ==========================================
     async function startDownload() {
         isRunning = true;
         stopRequested = false;
@@ -266,9 +232,8 @@
 
         try {
             await sleep(CONFIG.DELAY_BEFORE_START);
-
             const initialRows = getFileRows();
-            console.log(`[Yandex Disk Downloader] Файлов на странице: ${initialRows.length}`);
+            console.log(`[Yandex Disk Downloader] Файлов на странице при старте: ${initialRows.length}`);
 
             if (initialRows.length === 0) {
                 alert('Файлы не найдены на странице.\nУбедитесь, что папка загружена и содержит файлы.');
@@ -276,14 +241,11 @@
             }
 
             while (!stopRequested) {
-                // Проверка SPA-навигации
                 if (window.location.href !== startUrl) {
                     console.warn('[Yandex Disk Downloader] Обнаружена смена URL. Останавливаюсь.');
-                    alert('Страница была изменена. Скачивание остановлено.');
                     break;
                 }
 
-                // Ищем следующий необработанный файл
                 const rows = getFileRows();
                 let nextRow = null;
                 let nextKey = null;
@@ -297,12 +259,9 @@
                     }
                 }
 
-                // ─── Ветка скролла ───────────────────────────────
                 if (!nextRow) {
-                    // Проверяем «дно» до скролла
                     if (isAtBottom()) {
-                        // Даём шанс ленивой загрузке «догрузить» хвост
-                        await sleep(600);
+                        await sleep(800);
                         const lateNew = getFileRows().some(r => {
                             const k = getFileKey(r);
                             return k && !processedKeys.has(k);
@@ -313,38 +272,33 @@
                         }
                         continue;
                     }
-
                     scrollDown();
                     await sleep(CONFIG.DELAY_AFTER_SCROLL);
                     emptyScrolls++;
-
                     if (emptyScrolls >= CONFIG.MAX_EMPTY_SCROLLS) {
-                        console.warn(`[Yandex Disk Downloader] ${CONFIG.MAX_EMPTY_SCROLLS} пустых скроллов подряд. Останавливаюсь.`);
+                        console.warn(`[Yandex Disk Downloader] ${CONFIG.MAX_EMPTY_SCROLLS} пустых скроллов. Останавливаюсь.`);
                         break;
                     }
                     continue;
                 }
 
-                // Нашли файл — сбрасываем счётчик пустых скроллов
                 emptyScrolls = 0;
-
-                // ─── Обработка файла ─────────────────────────────
                 const fileName = getFileName(nextRow) || 'файл';
                 processedKeys.add(nextKey);
                 filesCount++;
 
                 updateButtonUI('running', `⚡ [${filesCount}] ${fileName.slice(0, 22)}...`);
-
                 nextRow.scrollIntoView({ block: 'center', behavior: 'auto' });
                 await sleep(CONFIG.DELAY_CLICK_WAIT);
 
-                // Выделяем строку только если ещё не выделена
                 if (!isRowSelected(nextRow)) {
                     simulateFullClick(nextRow);
-                    await sleep(CONFIG.DELAY_CLICK_WAIT);
+                    for (let i = 0; i < 10; i++) {
+                        if (isRowSelected(nextRow)) break;
+                        await sleep(100);
+                    }
                 }
 
-                // Ждём появления кнопки «Скачать»
                 let downloadBtn = null;
                 const btnSteps = Math.ceil(CONFIG.MAX_WAIT_FOR_BUTTON / 100);
                 for (let i = 0; i < btnSteps && !stopRequested; i++) {
@@ -353,20 +307,19 @@
                     await sleep(100);
                 }
 
-                // ⚠️ КРИТИЧНО: дожидаемся, пока action bar покажет ИМЕННО наш файл
-                // Без подтверждения имени кликать нельзя — иначе скачается предыдущий файл.
                 let nameConfirmed = false;
+                let shownName = '';
                 if (downloadBtn) {
                     const nameSteps = Math.ceil(CONFIG.MAX_WAIT_FOR_NAME / 100);
                     for (let i = 0; i < nameSteps && !stopRequested; i++) {
-                        const shown = getActionBarFileName();
-                        if (shown === fileName) { nameConfirmed = true; break; }
+                        shownName = getActionBarFileName();
+                        if (shownName === fileName) { nameConfirmed = true; break; }
                         await sleep(100);
                     }
                 }
 
-                // Клик только при подтверждённом имени
                 if (downloadBtn && nameConfirmed) {
+                    console.log(`[Yandex Disk Downloader] Клик "Скачать" для: ${fileName}`);
                     let clicked = false;
                     for (let attempt = 0; attempt < CONFIG.MAX_RETRIES && !clicked && !stopRequested; attempt++) {
                         clicked = simulateFullClick(downloadBtn);
@@ -384,20 +337,19 @@
                     console.warn(`[Yandex Disk Downloader] Кнопка «Скачать» не появилась для "${fileName}"`);
                     skippedCount++;
                 } else {
-                    console.warn(`[Yandex Disk Downloader] Файл "${fileName}" не подтверждён в action bar — пропуск (защита от скачивания не того файла)`);
+                    console.warn(`[Yandex Disk Downloader] Имя не подтверждено. В панели: "${shownName}", Ожидалось: "${fileName}". Пропуск.`);
                     skippedCount++;
                 }
 
                 await sleep(CONFIG.DELAY_BETWEEN_FILES);
             }
 
-            // Итог
             if (stopRequested) {
                 console.log(`[Yandex Disk Downloader] Остановлено. Обработано: ${filesCount}, пропущено: ${skippedCount}`);
             } else {
                 let msg = `Готово! Обработано файлов: ${filesCount}.`;
-                if (skippedCount > 0) msg += `\nПропущено (кнопка/имя не подтверждены): ${skippedCount}.`;
-                msg += `\nПроверьте папку «Загрузки».`;
+                if (skippedCount > 0) msg += `\nПропущено: ${skippedCount}.`;
+                msg += `\n\nВАЖНО: Проверьте папку «Загрузки».`;
                 alert(msg);
             }
         } catch (e) {
@@ -414,18 +366,11 @@
         }
     }
 
-    // ==========================================
-    // 🔧 ИНИЦИАЛИЗАЦИЯ
-    // ==========================================
     function init() {
         createDownloadButton();
-
         let lastUrl = window.location.href;
-        // Единый интервал: восстановление кнопки + детект SPA-навигации
         setInterval(() => {
-            if (document.body && !document.getElementById('tm-download-all-btn')) {
-                createDownloadButton();
-            }
+            if (document.body && !document.getElementById('tm-download-all-btn')) createDownloadButton();
             const url = window.location.href;
             if (url !== lastUrl) {
                 console.log(`[Yandex Disk Downloader] URL changed: ${lastUrl} -> ${url}`);
@@ -439,9 +384,6 @@
         }, 1500);
     }
 
-    if (document.body) {
-        init();
-    } else {
-        document.addEventListener('DOMContentLoaded', init, { once: true });
-    }
+    if (document.body) init();
+    else document.addEventListener('DOMContentLoaded', init, { once: true });
 })();
