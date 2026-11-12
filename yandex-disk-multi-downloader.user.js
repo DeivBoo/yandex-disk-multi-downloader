@@ -6,6 +6,10 @@
 // @author       Advenitille, DeivBoo
 // @match        https://disk.yandex.ru/d/*
 // @match        https://disk.yandex.ru/client/*
+// @match        https://disk.yandex.by/d/*
+// @match        https://disk.yandex.by/client/*
+// @match        https://disk.yandex.kz/d/*
+// @match        https://disk.yandex.kz/client/*
 // @icon         https://yastatic.net/s3/psf/disk-public/_/9e088280d5e5ab14.png
 // @grant        GM_info
 // @license      MIT
